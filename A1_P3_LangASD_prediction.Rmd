@@ -1,0 +1,412 @@
+---
+title: "Assignment 1 - Language Development in ASD - part 3"
+author: "Riccardo Fusaroli"
+date: "August 10, 2017"
+output:
+  word_document: default
+  html_document: default
+---
+
+NOT DONE, MISSING REPORTING AND INTERPRETING
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Welcome to the third exciting part of the Language Development in ASD exercise
+
+In this exercise we will delve more in depth with different practices of model comparison and model selection, by first evaluating your models from last time, then learning how to cross-validate models and finally how to systematically compare models.
+
+N.B. There are several datasets for this exercise, so pay attention to which one you are using!
+
+1. The (training) dataset from last time (the awesome one you produced :-) ).
+2. The (test) datasets on which you can test the models from last time:
+* Demographic and clinical data: https://www.dropbox.com/s/ra99bdvm6fzay3g/demo_test.csv?dl=0
+* Utterance Length data: https://www.dropbox.com/s/uxtqqzl18nwxowq/LU_test.csv?dl=0
+* Word data: https://www.dropbox.com/s/1ces4hv8kh0stov/token_test.csv?dl=0
+
+```{r Load Libraries}
+library(stringr)
+library(tidyverse)
+library(plyr)
+library(ggplot2)
+library(lme4)
+
+#library(modelr)
+library(Metrics)
+```
+
+### Exercise 1) Testing model performance
+
+How did your models from last time perform? In this exercise you have to compare the results on the training data () and on the test data. Report both of them. Compare them. Discuss why they are different.
+
+- recreate the models you chose last time (just write the code again and apply it to Assignment2TrainData1.csv)
+
+```{r}
+#wd and read  training data in
+getwd()
+#setwd("C:/Users/Viki/Documents/egyetem/exp.met/port1/assignment1")
+port1_data= read.csv("port1_data.csv")
+
+#check the format of the variables
+str(port1_data)
+
+#correcting
+port1_data$id= as.factor(port1_data$id)
+port1_data$visit=as.numeric(port1_data$visit)
+
+#new-final model from part2
+library(lmerTest)
+model_old= lmer(CHI_MLU ~ ADOS + visit + Diagnosis*visit + nonverbal_IQ + I(visit^2) + (1 + visit|id), port1_data)
+summary(model_old)
+library(MuMIn)
+r.squaredGLMM(model_old)
+
+```
+
+- calculate performance of the model on the training data: root mean square error is a good measure. (Tip: google the functions rmse() and predict() )
+```{r}
+
+modelr::rmse(model_old, port1_data) # 0.324642
+#rmse should be small
+
+```
+
+
+- create the test dataset (apply the code from assignment 1 part 1 to clean up the 3 test datasets)
+
+
+```{r}
+#load data
+demo_test= read.csv("C:/Users/Viki/Documents/egyetem/exp.met/port1/assignment1/demo_test.csv")
+LU_test= read.csv("C:/Users/Viki/Documents/egyetem/exp.met/port1/assignment1/LU_test.csv")
+token_test= read.csv("C:/Users/Viki/Documents/egyetem/exp.met/port1/assignment1/token_test.csv")
+
+#clean data
+demo_test = plyr::rename(demo_test, c("Child.ID" = "id"))
+demo_test = plyr::rename(demo_test, c("Visit" = "visit"))
+LU_test = plyr::rename(LU_test, c("VISIT" = "visit"))
+LU_test = plyr::rename(LU_test, c("SUBJ" = "id"))
+token_test = plyr::rename(token_test, c("VISIT" = "visit"))
+token_test = plyr::rename(token_test, c("SUBJ" = "id"))
+
+demo_test = plyr::rename(demo_test, c("MullenRaw" = "nonverbal_IQ"))
+demo_test = plyr::rename(demo_test, c("ExpressiveLangRaw" = "verbal_IQ"))
+
+
+LU_test$visit= str_extract(LU_test$visit, "\\d")
+token_test$visit=str_extract(token_test$visit, "\\d")
+
+demo_test$id <- gsub("\\.", "", demo_test$id, perl = TRUE)
+LU_test$id <- gsub("\\.", "", LU_test$id, perl = TRUE)
+token_test$id <- gsub("\\.", "", token_test$id, perl = TRUE)
+
+
+demo_test1= select(demo_test, id, visit, Ethnicity, Diagnosis, Gender, Age, ADOS, nonverbal_IQ, verbal_IQ)
+LU_test1= select(LU_test, id, visit, MOT_MLU, MOT_LUstd, CHI_MLU, CHI_LUstd)
+token_test1= select(token_test, id, visit, types_MOT, types_CHI, tokens_MOT, tokens_CHI)
+
+df= merge(demo_test1, LU_test1)
+port1=merge(df, token_test1)
+
+subset_visit= subset(port1, port1$visit == "1", select= c("id","ADOS", "nonverbal_IQ", "verbal_IQ"))
+subset_all= subset(port1, select= -c(ADOS, nonverbal_IQ, verbal_IQ))
+final= merge(subset_all, subset_visit, all=T)
+
+participants= c(final$id)
+parti=as.numeric(as.factor(participants))
+final$id= parti
+
+final$visit= as.numeric(final$visit)
+final$Gender=as.factor(final$Gender)
+
+
+final$Gender=revalue(final$Gender, c("1"="M", "2"="F"))
+final$Diagnosis=revalue(final$Diagnosis, c("A"="ASD", "B"="TD"))
+
+write.csv(final, file = "test_data.csv", row.names = F)
+
+
+```
+
+- test the performance of the models on the test data (Tips: time to reuse "predict()")
+
+
+```{r}
+
+test_data= read.csv("test_data.csv")
+
+modelr::rmse(model_old, test_data) #0.7552895
+
+```
+
+- optional: predictions are never certain, can you identify the uncertainty of the predictions? (e.g. google predictinterval())
+
+I used the model I reported in part one, exercise 4, as it was the only good model I could create. Its performance on the train data is adequate, the root mean square error is 0.324. Its performance on the test data is bad, the root mean square error is 0.755.
+
+
+### Exercise 2) Model Selection via Cross-validation (N.B: ChildMLU!)
+
+One way to reduce bad surprises when testing a model on new data is to train the model via cross-validation. 
+
+In this exercise you have to use cross-validation to calculate the predictive error of your models and use this predictive error to select the best possible model.
+
+- Create the basic model of ChildMLU as a function of Time and Diagnosis (don't forget the random effects!).
+
+```{r}
+model_basic= lmer(CHI_MLU ~ Diagnosis + visit + (1 + visit|id), port1_data)
+summary(model_basic)
+r.squaredGLMM(model_basic)
+```
+
+- Make a cross-validated version of the model. (Tips: google the function "createFolds";  loop through each fold, train a model on the other folds and test it on the fold)
+
+```{r}
+
+#create a function for %not in% - from the net
+"%not in%" <- function (x, table) is.na(match(x, table, nomatch=NA_integer_))
+
+#create empty dataframes to save output from cross-validation
+croval_test= data.frame() #for the test data
+croval_train= data.frame() #for the train data
+
+#create folds
+#using 4 folds
+#use unique so the data from one child goes to one fold
+library(caret)
+folds=createFolds(unique(port1_data$id), 4)
+
+#loop through the folds
+for (i in folds) {
+  #create a dataframe that has 3 folds - this is the train data
+  three_fold = subset(port1_data, id %not in% i)
+  #create a dataframe that has 1 fold - this is the test data
+  one_fold= subset(port1_data, id %in% i)
+  # model 11 - the basic model, on the train data of 3 folds
+  model_basic= lmer(CHI_MLU ~ Diagnosis + visit + (1 + visit|id), three_fold)
+  #get rmse
+  train_model_error=modelr::rmse(model_basic, three_fold)
+  
+  # Metrics needs predict() before
+  #get rmse
+  pred= predict(model_basic, one_fold, allow.new.levels=TRUE)
+  test_model_error = Metrics::rmse(one_fold$CHI_MLU, pred)
+  
+  croval_test = rbind(croval_test, data.frame(test_model_error))
+  croval_train= rbind(croval_train, data.frame(train_model_error))
+}
+#rmse for train data should always be smaller
+
+mean_test_model_basic= mean(croval_test$test_model_error)
+mean_train_model_basic= mean(croval_train$train_model_error)
+
+# mean of the rmse of the data the model is trained on (three folds)
+mean_train_model_basic 
+# mean of the rmse of the data the model is tested on (one fold) 
+mean_test_model_basic 
+
+
+```
+- Report the results and comment on them.
+
+I used four folds to create the cross-validated model of the basic model. The root mean square error for the train data is 0.34, and for the test data is 0.82. This means that the model fits the train data much better than it fits the test data, which was expected to happen. The root mean square error is big for the test data, which means that the model is really bad at predicting.
+
+- Now try to find the best possible predictive model of ChildMLU, that is, the one that produces the best cross-validated results.
+```{r}
+
+
+#model_old
+#model_old= lmer(CHI_MLU ~ ADOS + visit + Diagnosis*visit + nonverbal_IQ + I(visit^2) + (1 + visit|id), port1_data)
+
+#trying out variations to get better results - they are not better. 
+#leaving the best one
+model1= lmer(CHI_MLU ~ ADOS + visit + nonverbal_IQ + I(visit^2) + (1 + visit|id), port1_data)
+
+croval_test= data.frame() 
+croval_train= data.frame() 
+
+folds=createFolds(unique(port1_data$id), 4)
+
+for (i in folds) {
+  three_fold = subset(port1_data, id %not in% i)
+  one_fold= subset(port1_data, id %in% i)
+  model_old= lmer(CHI_MLU ~ ADOS + visit + Diagnosis*visit + nonverbal_IQ + I(visit^2) + (1 + visit|id), three_fold)
+  train_model_error=modelr::rmse(model_old, three_fold)
+  pred= predict(model_old, one_fold, allow.new.levels=TRUE)
+  test_model_error = Metrics::rmse(one_fold$CHI_MLU, pred)
+  
+  croval_test = rbind(croval_test, data.frame(test_model_error))
+  croval_train= rbind(croval_train, data.frame(train_model_error))
+}
+
+mean_test_model_old= mean(croval_test$test_model_error)
+mean_train_model_old= mean(croval_train$train_model_error)
+
+#-------
+croval_test= data.frame() 
+croval_train= data.frame() 
+
+folds=createFolds(unique(port1_data$id), 4)
+
+for (i in folds) {
+  three_fold = subset(port1_data, id %not in% i)
+  one_fold= subset(port1_data, id %in% i)
+  model1= lmer(CHI_MLU ~ ADOS + visit + nonverbal_IQ + I(visit^2) + (1 + visit|id), three_fold)
+  train_model_error=modelr::rmse(model1, three_fold)
+  pred= predict(model1, one_fold, allow.new.levels=TRUE)
+  test_model_error = Metrics::rmse(one_fold$CHI_MLU, pred)
+  
+  croval_test = rbind(croval_test, data.frame(test_model_error))
+  croval_train= rbind(croval_train, data.frame(train_model_error))
+}
+
+mean_test_model1= mean(croval_test$test_model_error)
+mean_train_model1= mean(croval_train$train_model_error)
+
+
+
+best_model= cbind(mean_test_model_old, mean_test_model_basic, mean_test_model1, mean_train_model_old, mean_train_model_basic, mean_train_model1)
+#want the error to be lowest.
+
+```
+
+To find the best predictive model first I used the model I used was the model I used in exercise 1. The root mean square error for the train data is 0.32, and for the test data is 0.64. I could not find any other model that gave me better cross-validated results unfortunately.
+
+
+- Bonus Question 1: How would you go comparing the performance of the basic model and the cross-validated model on the testing set?
+- Bonus Question 2: What is the effect of changing the number of folds? Can you plot RMSE as a function of number of folds?
+- Bonus Question 3: compare the cross-validated predictive error against the actual predictive error on the test data
+
+
+### Exercise 3) Assessing the single child
+
+Let's get to business. This new kiddo - Bernie - has entered your clinic. This child has to be assessed according to his group's average and his expected development.
+
+Bernie is one of the six kids in the test dataset, so make sure to extract that child alone for the following analysis.
+
+```{r}
+#to check if I'm using the right child
+#check= subset(LU_test, LU_test$id == "Bernie",)
+bernie= subset(test_data, test_data$id== "2")
+
+```
+
+You want to evaluate:
+
+- how does the child fare in ChildMLU compared to the average TD child at each visit? Define the distance in terms of absolute difference between this Child and the average TD.
+(Tip: recreate the equation of the model: Y=Intercept+BetaX1+BetaX2, etc; input the average of the TD group  for each parameter in the model as X1, X2, etc.).
+
+(substract the mean CHI_MLUs of each visit from the MLU of Bernie to see how different he is from them)
+
+```{r}
+# I failed to create a loop or function for this
+
+visit1_train= subset(port1_data, port1_data$visit == "1" & port1_data$Diagnosis == "TD")
+visit2_train= subset(port1_data, port1_data$visit == "2" & port1_data$Diagnosis == "TD")
+visit3_train= subset(port1_data, port1_data$visit == "3" & port1_data$Diagnosis == "TD")
+visit4_train= subset(port1_data, port1_data$visit == "4" & port1_data$Diagnosis == "TD")
+visit5_train= subset(port1_data, port1_data$visit == "5" & port1_data$Diagnosis == "TD")
+visit6_train= subset(port1_data, port1_data$visit == "6" & port1_data$Diagnosis == "TD")
+
+visit1_bernie= bernie$CHI_MLU[1] 
+visit1=visit1_bernie - mean(visit1_train$CHI_MLU)
+
+visit2_bernie= bernie$CHI_MLU[2] 
+visit2=visit2_bernie - mean(visit2_train$CHI_MLU)
+
+visit3_bernie= bernie$CHI_MLU[3] 
+visit3=visit3_bernie - mean(visit3_train$CHI_MLU)
+
+visit4_bernie= bernie$CHI_MLU[4] 
+visit4=visit4_bernie - mean(visit4_train$CHI_MLU)
+
+visit5_bernie= bernie$CHI_MLU[5] 
+visit5=visit5_bernie - mean(visit5_train$CHI_MLU)
+
+visit6_bernie= bernie$CHI_MLU[6] 
+visit6=visit6_bernie - mean(visit6_train$CHI_MLU)
+
+bernie$others= rbind(mean(visit1_train$CHI_MLU), mean(visit2_train$CHI_MLU), mean(visit3_train$CHI_MLU), mean(visit4_train$CHI_MLU), mean(visit5_train$CHI_MLU), mean(visit6_train$CHI_MLU))
+
+bernie$bernies_development= rbind(visit1, visit2, visit3, visit4, visit5, visit6)
+
+
+
+#delete all the unnecessary variables
+rm(visit1_train, visit2_train, visit3_train, visit4_train, visit5_train, visit6_train)
+rm(visit1_bernie, visit2_bernie, visit3_bernie, visit4_bernie, visit5_bernie, visit6_bernie)
+rm(visit1, visit2, visit3, visit4, visit5, visit6)
+
+#-------------------------------------------------------------
+#code from class
+# fakechild= subset(port1_data, Diagnosis == "TD") %>%
+#   group_by(visit) %>%
+#   summarise(CHI_MLU= mean(CHI_MLU))
+# 
+# predict(model,fakechild) # compare to bernie
+
+
+```
+
+- how does the child fare compared to the model predictions at Visit 6? Is the child below or above expectations? (tip: use the predict() function on Bernie's data only and compare the prediction with the actual performance of the child)
+
+```{r}
+#notes
+# B6= subset(bernie, visit== 6)
+# pred= predict(model_basic, B6)
+# B6$CHI_MLU - pred
+#--------------------------------
+
+#using the basic model
+
+bernie$basic_model_prediction=predict(model_basic, bernie)
+
+
+modelr::rmse(model_basic, bernie) #0.4150528
+
+ggplot(bernie, aes(visit)) +
+  geom_line(aes(visit, CHI_MLU))+
+  geom_line(aes(visit, basic_prediction), colour= "red") +
+  labs(x="visit", y="CHI_MLU") 
+
+#using the best model I could make
+
+bernie$best_model_prediction=predict(model_old, bernie)
+
+modelr::rmse(model_old, bernie) #0.6283502
+
+ggplot(bernie, aes(visit)) +
+  geom_line(aes(visit, CHI_MLU))+
+  geom_line(aes(visit, better_prediction), colour= "red") +
+  labs(x="visit", y="CHI_MLU") 
+
+
+#see it compared to other children
+ggplot(bernie, aes(visit)) +
+  geom_line(aes(visit, CHI_MLU))+
+  geom_line(aes(visit, others), colour= "red") +
+  labs(x="visit", y="CHI_MLU", title= "Bernie (black) compared to other children") 
+
+
+#new dataframe to see things better
+difference= select(bernie, CHI_MLU, others, bernies_development, basic_model_prediction, best_model_prediction)
+
+```
+
+Unfortunately, the basic model  is a model that is better at predicting Bernie's development than my best model , based on the root mean square error. Root mean square error for basic model is 0.4150528. For my best model it is 0.6283502.
+Bernie performs better through all the visits than an average typically developing child, and is above expectations at visit 6. 
+
+
+### OPTIONAL: Exercise 4) Model Selection via Information Criteria
+Another way to reduce the bad surprises when testing a model on new data is to pay close attention to the relative information criteria between the models you are comparing. Let's learn how to do that!
+
+Re-create a selection of possible models explaining ChildMLU (the ones you tested for exercise 2, but now trained on the full dataset and not cross-validated).
+
+Then try to find the best possible predictive model of ChildMLU, that is, the one that produces the lowest information criterion.
+
+- Bonus question for the optional exercise: are information criteria correlated with cross-validated RMSE? That is, if you take AIC for Model 1, Model 2 and Model 3, do they co-vary with their cross-validated RMSE?
+
+### OPTIONAL: Exercise 5): Using Lasso for model selection
+Welcome to the last secret exercise. If you have already solved the previous exercises, and still there's not enough for you, you can expand your expertise by learning about penalizations. Check out this tutorial: http://machinelearningmastery.com/penalized-regression-in-r/ and make sure to google what penalization is, with a focus on L1 and L2-norms. Then try them on your data!
+
+
